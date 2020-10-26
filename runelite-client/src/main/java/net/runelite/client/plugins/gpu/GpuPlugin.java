@@ -38,6 +38,8 @@ import com.jogamp.opengl.GLException;
 import com.jogamp.opengl.GLFBODrawable;
 import com.jogamp.opengl.GLProfile;
 import com.jogamp.opengl.math.Matrix4;
+
+
 import java.awt.Canvas;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
@@ -45,6 +47,11 @@ import java.awt.Image;
 import java.awt.geom.AffineTransform;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferInt;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -91,8 +98,11 @@ import static net.runelite.client.plugins.gpu.GLUtil.glGetInteger;
 import net.runelite.client.plugins.gpu.config.AntiAliasingMode;
 import net.runelite.client.plugins.gpu.config.UIScalingMode;
 import net.runelite.client.plugins.gpu.template.Template;
+import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.DrawManager;
+import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.OSType;
+import net.runelite.client.util.ImageUtil;
 
 @PluginDescriptor(
 	name = "GPU",
@@ -132,6 +142,13 @@ public class GpuPlugin extends Plugin implements DrawCallbacks
 
 	@Inject
 	private PluginManager pluginManager;
+
+	@Inject
+	private ClientToolbar clientToolbar;
+
+	private NavigationButton titleBarButtonScreenshot3D;
+
+	private boolean screenshot3DQueued;
 
 	private boolean useComputeShaders;
 
@@ -274,6 +291,17 @@ public class GpuPlugin extends Plugin implements DrawCallbacks
 	@Override
 	protected void startUp()
 	{
+
+		final BufferedImage iconImage = ImageUtil.getResourceStreamFromClass(getClass(), "screenshot3d.png");
+		titleBarButtonScreenshot3D = NavigationButton.builder()
+			.tab(false)
+			.tooltip("3D screenshot")
+			.icon(iconImage)
+			.onClick(() -> {this.screenshot3DQueued = true;})
+			.build();
+
+		clientToolbar.addNavigation(titleBarButtonScreenshot3D);
+
 		clientThread.invoke(() ->
 		{
 			try
@@ -426,6 +454,8 @@ public class GpuPlugin extends Plugin implements DrawCallbacks
 	@Override
 	protected void shutDown()
 	{
+		clientToolbar.removeNavigation(titleBarButtonScreenshot3D);
+
 		clientThread.invoke(() ->
 		{
 			client.setGpu(false);
@@ -1171,6 +1201,33 @@ public class GpuPlugin extends Plugin implements DrawCallbacks
 			gl.glBindBuffer(gl.GL_ARRAY_BUFFER, useComputeShaders ? tmpOutUvBufferId : tmpUvBufferId);
 			gl.glVertexAttribPointer(1, 4, gl.GL_FLOAT, false, 0, 0);
 
+			if (screenshot3DQueued) {
+				log.info("Screenshotting 3D!");
+				IntBuffer buffer = IntBuffer.allocate(4*targetBufferOffset);
+				gl.glGetNamedBufferSubData(useComputeShaders ? tmpOutBufferId : tmpBufferId, 0, 4*targetBufferOffset*Integer.BYTES, buffer);
+
+				try {
+					File outFile = new File("/tmp/test.obj");
+					outFile.createNewFile();
+					PrintWriter writer = new PrintWriter(new BufferedWriter(new FileWriter(outFile)));
+					for (int i = 0; i < 4*targetBufferOffset; i += 4) {
+						int x = buffer.get(i);
+						int y = buffer.get(i+1);
+						int z = buffer.get(i+2);
+						int argb = buffer.get(i+3);
+						writer.printf("v %f %f %f\n", x/128.,y/128.,z/128.);
+					}
+					for (int i = 0; i < targetBufferOffset; i += 3) {
+						// OBJ files are 1-indexed
+						writer.printf("f %d %d %d\n", 1+i, 1+i+1, 1+i+2);
+					}
+					writer.flush();
+					writer.close();
+				} catch (IOException e) {
+
+				}
+			}
+
 			gl.glDrawArrays(gl.GL_TRIANGLES, 0, targetBufferOffset);
 
 			gl.glDisable(gl.GL_BLEND);
@@ -1208,6 +1265,7 @@ public class GpuPlugin extends Plugin implements DrawCallbacks
 		glDrawable.swapBuffers();
 
 		drawManager.processDrawComplete(this::screenshot);
+		screenshot3DQueued = false;
 	}
 
 	private float[] makeProjectionMatrix(float w, float h, float n)
